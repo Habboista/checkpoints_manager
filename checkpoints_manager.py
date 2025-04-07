@@ -3,7 +3,7 @@ import torch
 
 class CheckpointsManager:
     """Class for automatically loading and saving checkpoints of
-    torch model, optimizer and scheduler in an organized directory tree.
+    specified modules in an organized directory tree.
 
     Structure of the directory tree containing the checkpoints:
 
@@ -35,8 +35,14 @@ class CheckpointsManager:
                     |- ...
     """
 
-    def __init__(self, experiment_dir_path, epochs_per_run, verbose=True):
+    def __init__(self,
+        modules_to_track,
+        experiment_dir_path,
+        epochs_per_run,
+        verbose=True
+    ):
         # Passed arguments
+        self.modules_to_track = modules_to_track
         self.experiment_dir_path = experiment_dir_path
         self.epochs_per_run = epochs_per_run
         self.verbose = verbose
@@ -51,11 +57,13 @@ class CheckpointsManager:
         # of the current ongoing training run
         self.current_run_dir_path = None
 
+        self.scan_experiment_dir()
+
     
-    def load_last_checkpoint(self, checkpoint_modules): 
+    def load_last_checkpoint(self): 
         """Load state dict of objects specified by the dictionary
-        checkpoint_modules of last run/epoch.
-        E.g. checkpoint_modules = {
+        modules_to_track of last run/epoch.
+        E.g. modules_to_track = {
             'model': model,
             'optmizer': optimizer,
             'scheduler': scheduler,
@@ -69,9 +77,7 @@ class CheckpointsManager:
             return
         
         # Otherwise, load checkpoints
-        
-        for module_name, module in checkpoint_modules:
-            # Load model
+        for module_name, module in self.modules_to_track.items():
             checkpoint_module_path = \
                 self.get_checkpoint_module_path(
                     module_name,
@@ -80,14 +86,18 @@ class CheckpointsManager:
             module.load_state_dict(
                 torch.load(checkpoint_module_path, map_location='cpu')
             )
+            if self.verbose:
+                print(f"Loaded checkpoint {self.start_epoch - 1:02d}" +
+                    f" / {self.epochs_per_run - 1:02d}" +
+                    f"for module {module_name}.")
 
 
-    def save_checkpoint(self, checkpoint_modules): 
-        """Save state dict of objects specified in checkpoint_modules. 
+    def save_checkpoint(self): 
+        """Save state dict of objects specified in modules_to_track. 
         of run/epoch. It automatically keeps track of current epoch.
         """
         
-        for module_name, module in checkpoint_modules:
+        for module_name, module in self.modules_to_track.items():
             checkpoint_module_path = \
                 self.get_checkpoint_module_path(
                     module_name,
@@ -97,28 +107,18 @@ class CheckpointsManager:
                 module.state_dict(),
                 checkpoint_module_path,
             )
-        
-        # Save optimizer
-        optimizer_checkpoint_path = \
-            self.get_checkpoint_path('optimizer', self.start_epoch)
-        torch.save(
-            optimizer.state_dict(),
-            optimizer_checkpoint_path,
-        )
-        
-        # Save scheduler
-        scheduler_checkpoint_path = \
-            self.get_checkpoint_module_path('scheduler', self.start_epoch)
-        torch.save(
-            scheduler.state_dict(),
-            scheduler_checkpoint_path,
-        )
+            if self.verbose:
+                print(f"Saved checkpoint {self.start_epoch:02d}" +
+                    f" / {self.epochs_per_run - 1:02d}" +
+                    f"for module {module_name}.")
 
         self.start_epoch += 1
         if self.start_epoch == self.epochs_per_run:
             # Start next run
             current_run_index = \
                 self.get_run_index_from_path(self.current_run_dir_path)
+            if self.verbose:
+                print(f"Completed run_{current_run_index:02d}.")
             self.make_run_dir(current_run_index + 1)
         
 
@@ -169,26 +169,13 @@ class CheckpointsManager:
         )
         
         # Checkpoint dirs
-        os.makedirs(
-            os.path.join(
-                run_dir_path,
-                'model',
-            ),
-        )
-        
-        os.makedirs(
-            os.path.join(
-                run_dir_path,
-                'optimizer',
-            ),
-        )
-
-        os.makedirs(
-            os.path.join(
-                run_dir_path,
-                'scheduler',
-            ),
-        )
+        for module_name in self.modules_to_track:
+            os.makedirs(
+                os.path.join(
+                    run_dir_path,
+                    module_name,
+                ),
+            )
         
         self.start_epoch = 0
         self.current_run_dir_path = run_dir_path
@@ -232,7 +219,7 @@ class CheckpointsManager:
             # No, get last checkpoint in current run.
             self.current_run_dir_path = last_run_dir_path
             self.start_epoch = \
-                self.get_checkpoint_last_epoch(self.current_run_dir_path) + 1
+                self.get_last_epoch_index(self.current_run_dir_path) + 1
 
 
     def get_last_run_dir_path(self):
@@ -259,19 +246,19 @@ class CheckpointsManager:
         return last_run_dir_path
 
 
-    def get_checkpoint_last_epoch(self, run_dir_path):
+    def get_last_epoch_index(self, run_dir_path):
         model_dir_path = os.path.join(run_dir_path, 'model')
         optimizer_dir_path = os.path.join(run_dir_path, 'optimizer')
         scheduler_dir_path = os.path.join(run_dir_path, 'scheduler')
         
         return min(
-            self._get_checkpoint_last_epoch(model_dir_path),
-            self._get_checkpoint_last_epoch(optimizer_dir_path),
-            self._get_checkpoint_last_epoch(scheduler_dir_path),
+            self._get_last_epoch_index(model_dir_path),
+            self._get_last_epoch_index(optimizer_dir_path),
+            self._get_last_epoch_index(scheduler_dir_path),
         )
 
 
-    def _get_checkpoint_last_epoch(self, dir_path):
+    def _get_last_epoch_index(self, dir_path):
         """ Returns the index of the last epoch for which a checkpoint
         is available in a folder of the following type:
 
@@ -308,5 +295,5 @@ class CheckpointsManager:
 
 
     def is_checkpoint_dir_full(self, checkpoints_dir_path):
-        last_epoch = self.get_checkpoint_last_epoch(checkpoints_dir_path)
+        last_epoch = self.get_last_epoch_index(checkpoints_dir_path)
         return last_epoch == self.epochs_per_run - 1
